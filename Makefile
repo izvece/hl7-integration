@@ -175,13 +175,13 @@ lint:  ## Alle Konfigurationen pruefen, so wie die Pipeline es tut
 	@./deploy/build.sh > /dev/null && echo "  XML wohlgeformt"
 	@echo "==> Prometheus-Regeln"
 	@docker run --rm -v "$(PWD)/monitoring/prometheus:/p:ro" \
-	  --entrypoint promtool prom/prometheus:v2.53.0 check rules /p/rules/hl7.yml
+	  --entrypoint promtool quay.io/prometheus/prometheus:v2.53.0 check rules /p/rules/hl7.yml
 	@echo "==> Prometheus-Konfiguration"
 	@docker run --rm -v "$(PWD)/monitoring/prometheus:/p:ro" \
-	  --entrypoint promtool prom/prometheus:v2.53.0 check config /p/prometheus.yml
+	  --entrypoint promtool quay.io/prometheus/prometheus:v2.53.0 check config /p/prometheus.yml
 	@echo "==> Alertmanager-Konfiguration"
 	@docker run --rm -v "$(PWD)/monitoring/alertmanager:/a:ro" \
-	  --entrypoint amtool prom/alertmanager:v0.27.0 check-config /a/alertmanager.yml
+	  --entrypoint amtool quay.io/prometheus/alertmanager:v0.27.0 check-config /a/alertmanager.yml
 	@echo "==> Grafana-Dashboard"
 	@jq -e '.panels | length > 0' monitoring/grafana/dashboards/hl7-pipeline.json > /dev/null \
 	  && echo "  Dashboard-JSON gueltig"
