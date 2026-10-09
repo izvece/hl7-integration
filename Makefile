@@ -43,12 +43,8 @@ init:  ## .env aus der Vorlage anlegen und Verzeichnisse erstellen
 .PHONY: up
 up:  ## Alle Container starten und auf Bereitschaft warten
 	@mkdir -p data/error-store
-	$(COMPOSE) up -d --build
-	@echo
-	@echo "Warte auf PostgreSQL..."
-	@until $(COMPOSE) exec -T postgres pg_isready -U $(POSTGRES_USER) -d $(POSTGRES_DB) \
-	        > /dev/null 2>&1; do printf '.'; sleep 2; done
-	@echo " bereit."
+	@echo "Starte Container und warte auf ihre Healthchecks..."
+	$(COMPOSE) up -d --build --wait
 	@echo "Warte auf Mirth (das dauert beim ersten Start eine Minute)..."
 	@until curl -sk --max-time 3 https://localhost:$(MIRTH_HTTPS_PORT)/api/server/version \
 	        > /dev/null 2>&1; do printf '.'; sleep 3; done

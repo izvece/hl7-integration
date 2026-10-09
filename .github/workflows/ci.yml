@@ -118,36 +118,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: PostgreSQL starten
+      - name: PostgreSQL starten und auf abgeschlossene Initialisierung warten
         run: |
           cp .env.example .env
-          docker compose up -d postgres
-
-      - name: Auf Bereitschaft warten
-        run: |
-          for _ in $(seq 1 30); do
-            if docker compose exec -T postgres \
-                 pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" > /dev/null 2>&1; then
-              echo "PostgreSQL ist bereit."
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "PostgreSQL wurde nicht bereit."
-          docker compose logs postgres
-          exit 1
+          # --wait wartet auf den Healthcheck, und der prueft seit diesem
+          # Commit, dass die Init-Skripte durch sind - nicht nur, dass
+          # Postgres antwortet.
+          docker compose up -d --wait postgres
 
       # Wenn ein Init-Skript scheitert, startet Postgres trotzdem - nur ohne
       # Schema. Das hier macht den Unterschied sichtbar.
       - name: Schema auf Vollstaendigkeit pruefen
         run: |
+          # RAISE EXCEPTION, nicht SELECT mit Textausgabe: ein SELECT gibt
+          # auch im Fehlerfall brav eine Zeile zurueck und psql endet mit 0.
+          # Diese Pruefung hat genau deshalb einmal gruen gemeldet, waehrend
+          # das Schema fehlte.
           docker compose exec -T postgres psql -v ON_ERROR_STOP=1 \
             -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
-              SELECT CASE WHEN count(*) = 3 THEN 'ok'
-                          ELSE 'FEHLER: nur ' || count(*) || ' von 3 Tabellen' END
-                FROM information_schema.tables
-               WHERE table_schema = 'hl7'
-                 AND table_name IN ('message_log', 'patient_event', 'message_error');"
+              DO \$\$
+              DECLARE n int;
+              BEGIN
+                  SELECT count(*) INTO n FROM information_schema.tables
+                   WHERE table_schema = 'hl7'
+                     AND table_name IN ('message_log','patient_event','message_error');
+                  IF n <> 3 THEN
+                      RAISE EXCEPTION 'Nur % von 3 Tabellen in hl7 vorhanden', n;
+                  END IF;
+                  RAISE NOTICE 'Schema vollstaendig: 3 Tabellen';
+              END
+              \$\$;"
 
       - name: Funktionen testen
         run: |
@@ -202,7 +202,7 @@ jobs:
         run: |
           cp .env.example .env
           mkdir -p data/error-store
-          docker compose up -d --build
+          docker compose up -d --build --wait
 
       - name: Auf Mirth warten
         run: |

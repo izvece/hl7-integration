@@ -42,11 +42,20 @@ services:
       # Schema-Aenderung: make reset (loescht das Volume).
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      # pg_isready allein genuegt NICHT: waehrend der Initialisierung hoert
+      # Postgres schon auf dem Unix-Socket, bevor die Skripte in
+      # docker-entrypoint-initdb.d durch sind. pg_isready meldet dann
+      # "bereit", waehrend das Schema hl7 noch nicht existiert - ein
+      # Wettlauf, der je nach Maschine mal auffaellt und mal nicht.
+      #
+      # Deshalb wird zusaetzlich das zuletzt angelegte Objekt geprueft.
+      # "gesund" heisst damit: die Initialisierung ist abgeschlossen. Genau
+      # das brauchen Mirth und der Exporter, die hierauf warten.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} && psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -tAc \"SELECT to_regclass('hl7.v_pipeline') IS NOT NULL\" | grep -q t"]
       interval: 5s
       timeout: 5s
-      retries: 20
-      start_period: 10s
+      retries: 40
+      start_period: 15s
     networks: [hl7net]
 
   mirth:
