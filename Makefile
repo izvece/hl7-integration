@@ -104,7 +104,7 @@ test-e2e:  ## Nachrichten durch den laufenden Kanal schicken und pruefen
 .PHONY: send
 send:  ## Alle Beispielnachrichten senden (ohne Pruefungen)
 	docker run --rm --network host -v "$(PWD)/tests:/tests:ro" -w /tests \
-	  python:3.12-alpine python send_hl7.py \
+	  public.ecr.aws/docker/library/python:3.12-alpine python send_hl7.py \
 	    --host localhost --port $(MLLP_PORT) samples/*.hl7
 
 # --- Hineinsehen ------------------------------------------------------------
@@ -140,8 +140,8 @@ fehler:  ## Die offene Fehlerablage anzeigen
 
 .PHONY: metriken
 metriken:  ## Die eigenen Metriken ansehen, wie Prometheus sie sieht
-	@docker run --rm --network hl7-integration_hl7net curlimages/curl:8.8.0 \
-	  -s http://postgres-exporter:9187/metrics | grep '^hl7_' || \
+	@$(COMPOSE) exec -T blackbox-exporter \
+	  wget -qO- http://postgres-exporter:9187/metrics | grep '^hl7_' || \
 	  echo "Keine hl7_-Metriken. Laeuft der Exporter? make logs"
 
 # --- Alarm ausprobieren -----------------------------------------------------

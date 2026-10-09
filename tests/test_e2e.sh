@@ -48,7 +48,7 @@ echo "==> Nachrichten senden"
 # ist. --network host, damit localhost:6661 erreichbar bleibt.
 docker run --rm --network host \
     -v "$PWD/tests:/tests:ro" -w /tests \
-    python:3.12-alpine python send_hl7.py \
+    public.ecr.aws/docker/library/python:3.12-alpine python send_hl7.py \
         --host "$MLLP_HOST" --port "$MLLP_PORT" \
         samples/01_gueltig_a01_aufnahme.hl7 \
         samples/02_gueltig_a08_aktualisierung.hl7 \
@@ -132,7 +132,7 @@ echo "==> Fehlerablage als Datei"
 # Die doppelte Ablage ist Absicht: haette die Datenbank ein Problem, waere
 # eine Fehlerablage in genau dieser Datenbank nichts wert.
 pruefe "5 Dateien in der Fehlerablage" \
-       "5" "$(ls -1 data/error-store/*.hl7 2>/dev/null | wc -l | tr -d '[:space:]')"
+       "5" "$(find data/error-store -name '*.hl7' -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
 pruefe "die Dateien enthalten die Rohnachricht" \
        "5" "$(grep -l '^MSH' data/error-store/*.hl7 2>/dev/null | wc -l | tr -d '[:space:]')"
 
@@ -142,7 +142,7 @@ echo "==> Dublettenerkennung"
 # ---------------------------------------------------------------------------
 docker run --rm --network host \
     -v "$PWD/tests:/tests:ro" -w /tests \
-    python:3.12-alpine python send_hl7.py \
+    public.ecr.aws/docker/library/python:3.12-alpine python send_hl7.py \
         --host "$MLLP_HOST" --port "$MLLP_PORT" \
         samples/01_gueltig_a01_aufnahme.hl7 > /dev/null
 sleep 5
@@ -160,9 +160,12 @@ pruefe "v_pipeline meldet keinen Rueckstau" \
        "0" "$(sql 'SELECT backlog::int FROM hl7.v_pipeline;')"
 pruefe "v_pipeline meldet 0 fuer haengende Nachrichten" \
        "0" "$(sql 'SELECT oldest_unprocessed_seconds::int FROM hl7.v_pipeline;')"
+# Abgefragt aus einem Container, der schon laeuft und wget mitbringt. Ein
+# eigener curl-Container waere ein zusaetzlicher Image-Pull, und genau die
+# sind in der Pipeline knapp (Docker Hub begrenzt unauthentifizierte Pulls).
 pruefe "der Exporter liefert die eigene Kennzahl aus" \
-       "1" "$(docker run --rm --network hl7-integration_hl7net curlimages/curl:8.8.0 \
-                -s http://postgres-exporter:9187/metrics \
+       "1" "$($COMPOSE exec -T blackbox-exporter \
+                wget -qO- http://postgres-exporter:9187/metrics 2>/dev/null \
                 | grep -c '^hl7_pipeline_oldest_unprocessed_seconds' || echo 0)"
 
 # ---------------------------------------------------------------------------

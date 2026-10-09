@@ -1,6 +1,13 @@
 # ---------------------------------------------------------------------------
 # Lokale HL7-Integrationsumgebung
 #
+# Zu den Registries: wo es moeglich ist, kommen die Images NICHT von Docker
+# Hub, sondern von public.ecr.aws bzw. quay.io. Grund ist die Pipeline:
+# GitHub-Runner teilen sich IP-Adressen, und Docker Hub begrenzt
+# unauthentifizierte Pulls pro IP. Der Build scheitert dann mit
+# "toomanyrequests", ohne dass am Code etwas falsch ist.
+# Nur Mirth und Grafana liegen ausschliesslich auf Docker Hub.
+#
 #   postgres           Zieldatenbank (hl7) + interner Mirth-Zustand (mirthdb)
 #   mirth              Integrationsserver, MLLP-Listener auf 6661
 #   postgres-exporter  macht die Monitoring-Sichten fuer Prometheus lesbar
@@ -18,7 +25,7 @@ name: hl7-integration
 services:
 
   postgres:
-    image: postgres:16-alpine
+    image: public.ecr.aws/docker/library/postgres:16-alpine
     container_name: hl7-postgres
     restart: unless-stopped
     environment:
@@ -43,6 +50,7 @@ services:
     networks: [hl7net]
 
   mirth:
+    # Mirth gibt es nur auf Docker Hub.
     image: nextgenhealthcare/connect:4.5.2
     container_name: hl7-mirth
     restart: unless-stopped
@@ -95,7 +103,7 @@ services:
     networks: [hl7net]
 
   blackbox-exporter:
-    image: prom/blackbox-exporter:v0.25.0
+    image: quay.io/prometheus/blackbox-exporter:v0.25.0
     container_name: hl7-blackbox-exporter
     restart: unless-stopped
     command:
@@ -105,7 +113,7 @@ services:
     networks: [hl7net]
 
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: quay.io/prometheus/prometheus:v2.53.0
     container_name: hl7-prometheus
     restart: unless-stopped
     depends_on: [postgres-exporter, blackbox-exporter]
@@ -123,7 +131,7 @@ services:
     networks: [hl7net]
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: quay.io/prometheus/alertmanager:v0.27.0
     container_name: hl7-alertmanager
     restart: unless-stopped
     command:
@@ -143,6 +151,7 @@ services:
     networks: [hl7net]
 
   grafana:
+    # Grafana gibt es nur auf Docker Hub.
     image: grafana/grafana:11.1.0
     container_name: hl7-grafana
     restart: unless-stopped
