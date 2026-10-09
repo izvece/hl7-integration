@@ -1,0 +1,171 @@
+# ---------------------------------------------------------------------------
+# Lokale HL7-Integrationsumgebung
+#
+#   postgres           Zieldatenbank (hl7) + interner Mirth-Zustand (mirthdb)
+#   mirth              Integrationsserver, MLLP-Listener auf 6661
+#   postgres-exporter  macht die Monitoring-Sichten fuer Prometheus lesbar
+#   blackbox-exporter  prueft von aussen, ob der MLLP-Port ueberhaupt annimmt
+#   prometheus         sammelt die Metriken, wertet die Alarmregeln aus
+#   alertmanager       verteilt die Alarme
+#   alert-sink         nimmt die Alarme lokal entgegen und schreibt sie ins Log
+#   grafana            Dashboard
+#
+# Starten:  make up
+# ---------------------------------------------------------------------------
+
+name: hl7-integration
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hl7-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Werden von den Init-Skripten in db/init gelesen
+      MIRTH_DB_PASSWORD: ${MIRTH_DB_PASSWORD}
+      HL7_APP_PASSWORD: ${HL7_APP_PASSWORD}
+      HL7_MONITOR_PASSWORD: ${HL7_MONITOR_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Die Skripte laufen NUR bei einer leeren Datenbank. Nach einer
+      # Schema-Aenderung: make reset (loescht das Volume).
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [hl7net]
+
+  mirth:
+    image: nextgenhealthcare/connect:4.5.2
+    container_name: hl7-mirth
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE: postgres
+      DATABASE_URL: jdbc:postgresql://postgres:5432/mirthdb
+      DATABASE_USERNAME: mirth
+      DATABASE_PASSWORD: ${MIRTH_DB_PASSWORD}
+      DATABASE_MAX_CONNECTIONS: "20"
+      KEYSTORE_STOREPASS: ${MIRTH_KEYSTORE_STOREPASS}
+      KEYSTORE_KEYPASS: ${MIRTH_KEYSTORE_KEYPASS}
+      VMOPTIONS: "-Xmx512m"
+    ports:
+      - "${MIRTH_HTTPS_PORT:-8443}:8443"   # Weboberflaeche und REST-API
+      - "${MLLP_PORT:-6661}:6661"          # MLLP-Listener des Kanals
+    volumes:
+      - mirth-appdata:/opt/connect/appdata
+      # Die Fehlerablage als Datei. Bewusst ein Bind-Mount: fehlerhafte
+      # Nachrichten soll man direkt im Dateisystem ansehen koennen, ohne
+      # erst in einen Container zu steigen.
+      - ./data/error-store:/data/error-store
+    healthcheck:
+      # bash ist im Image vorhanden, curl nicht zwingend - deshalb der
+      # direkte TCP-Test ueber /dev/tcp.
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/localhost/8443' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [hl7net]
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: hl7-postgres-exporter
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_NAME: "postgresql://hl7_monitor:${HL7_MONITOR_PASSWORD}@postgres:5432/hl7?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres-exporter/queries.yml
+      # Die mitgelieferten Standard-Metriken reichen uns; die eigenen Abfragen
+      # kommen aus queries.yml.
+      PG_EXPORTER_DISABLE_DEFAULT_METRICS: "false"
+    volumes:
+      - ./monitoring/exporter/queries.yml:/etc/postgres-exporter/queries.yml:ro
+    networks: [hl7net]
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: hl7-blackbox-exporter
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+    volumes:
+      - ./monitoring/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks: [hl7net]
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: hl7-prometheus
+    restart: unless-stopped
+    depends_on: [postgres-exporter, blackbox-exporter]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    networks: [hl7net]
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: hl7-alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    networks: [hl7net]
+
+  alert-sink:
+    build: ./monitoring/alert-sink
+    container_name: hl7-alert-sink
+    restart: unless-stopped
+    networks: [hl7net]
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: hl7-grafana
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks: [hl7net]
+
+networks:
+  hl7net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  mirth-appdata:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

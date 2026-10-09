@@ -1,0 +1,68 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    umgebung: lokal
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+
+  # Prometheus selbst - sonst merkt man nicht, wenn die Auswertung steht.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Die Kennzahlen der Pipeline aus PostgreSQL.
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # TCP-Pruefung des MLLP-Listeners. Laeuft ueber den blackbox_exporter: der
+  # Umweg mit den relabel-Regeln ist das Standardmuster dafuer - das Ziel
+  # steht in "target" und wird dem Exporter als Parameter uebergeben, damit
+  # die Metrik am Ende das gepruefte Ziel als Label traegt und nicht den
+  # Exporter.
+  - job_name: mllp-listener
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets: ["mirth:6661"]
+        labels:
+          dienst: "MLLP ADT Inbound"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # Erreichbarkeit der Mirth-Verwaltungsschnittstelle.
+  - job_name: mirth-api
+    metrics_path: /probe
+    params:
+      module: [mirth_api]
+    static_configs:
+      - targets: ["https://mirth:8443/api/server/version"]
+        labels:
+          dienst: "Mirth REST-API"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # Der blackbox_exporter selbst.
+  - job_name: blackbox-exporter
+    static_configs:
+      - targets: ["blackbox-exporter:9115"]

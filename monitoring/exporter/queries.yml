@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# Eigene Abfragen fuer den postgres_exporter.
+#
+# Der Exporter meldet sich als hl7_monitor an und darf genau die drei Sichten
+# lesen, die hier stehen. Keine davon enthaelt raw_message - es koennen also
+# konstruktiv keine Patientendaten nach Prometheus gelangen.
+#
+# Der Metrikname entsteht aus Schluessel + Spaltenname:
+#   hl7_pipeline + oldest_unprocessed_seconds -> hl7_pipeline_oldest_unprocessed_seconds
+# ---------------------------------------------------------------------------
+
+hl7_pipeline:
+  query: |
+    SELECT oldest_unprocessed_seconds,
+           backlog,
+           last_message_age_seconds,
+           received_last_5m
+      FROM hl7.v_pipeline
+  # Die Sicht rechnet ueber die ganze Tabelle. Alle 15 Sekunden reicht
+  # vollkommen und haelt die Last von der Zieldatenbank fern.
+  cache_seconds: 15
+  metrics:
+    - oldest_unprocessed_seconds:
+        usage: "GAUGE"
+        description: "Alter der aeltesten noch nicht verarbeiteten Nachricht in Sekunden. 0 = nichts offen."
+    - backlog:
+        usage: "GAUGE"
+        description: "Anzahl Nachrichten im Status received."
+    - last_message_age_seconds:
+        usage: "GAUGE"
+        description: "Alter der zuletzt eingegangenen Nachricht in Sekunden. -1 = noch nie eine empfangen."
+    - received_last_5m:
+        usage: "GAUGE"
+        description: "Eingegangene Nachrichten der letzten fuenf Minuten."
+
+hl7_messages:
+  query: |
+    SELECT status, total
+      FROM hl7.v_status_counts
+  cache_seconds: 15
+  metrics:
+    - status:
+        usage: "LABEL"
+        description: "received, processed oder error"
+    - total:
+        usage: "GAUGE"
+        description: "Anzahl Nachrichten je Status."
+
+hl7_errors:
+  query: |
+    SELECT reason, open_total, oldest_seconds
+      FROM hl7.v_error_reasons
+  cache_seconds: 15
+  metrics:
+    - reason:
+        usage: "LABEL"
+        description: "Fehlergrund, z.B. MISSING_PATIENT_ID"
+    - open_total:
+        usage: "GAUGE"
+        description: "Offene, nicht geklaerte Fehler je Grund."
+    - oldest_seconds:
+        usage: "GAUGE"
+        description: "Alter des aeltesten offenen Fehlers je Grund, in Sekunden."

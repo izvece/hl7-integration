@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------------
+# Alertmanager: entscheidet, WER einen Alarm wann erfaehrt.
+# Prometheus entscheidet nur, OB etwas nicht stimmt.
+# ---------------------------------------------------------------------------
+
+global:
+  resolve_timeout: 5m
+
+route:
+  # Alarme zur selben Sache werden gebuendelt, statt einzeln zu feuern.
+  group_by: ['alertname', 'bereich']
+  group_wait: 30s        # kurz sammeln, bevor die erste Meldung rausgeht
+  group_interval: 5m     # weitere Alarme derselben Gruppe
+  repeat_interval: 4h    # Erinnerung, solange nichts behoben ist
+  receiver: lokales-log
+
+  routes:
+    # Kritische Alarme sollen schneller raus und oefter erinnern.
+    - matchers:
+        - severity = "critical"
+      receiver: lokales-log
+      group_wait: 10s
+      repeat_interval: 1h
+
+inhibit_rules:
+  # Ist die Datenbank weg, bleiben zwangslaeufig Nachrichten haengen. Dann
+  # soll nur die Ursache melden, nicht zusaetzlich die Folge - sonst sucht
+  # man beim naechsten Mal an der falschen Stelle.
+  - source_matchers:
+      - alertname = "HL7DatenbankNichtErreichbar"
+    target_matchers:
+      - alertname =~ "HL7NachrichtenBleibenHaengen|HL7RueckstauWaechst"
+    equal: ['bereich']
+
+  # Dasselbe fuer den Listener: nimmt er nichts an, ist "keine Nachrichten"
+  # keine eigene Nachricht wert.
+  - source_matchers:
+      - alertname = "HL7MllpListenerNichtErreichbar"
+    target_matchers:
+      - alertname = "HL7KeineNachrichtenMehr"
+    equal: ['bereich']
+
+receivers:
+  - name: lokales-log
+    webhook_configs:
+      - url: http://alert-sink:8080/alert
+        send_resolved: true
+
+# ---------------------------------------------------------------------------
+# Fuer echten Betrieb statt des lokalen Logs einen dieser Empfaenger nehmen.
+# Die Zugangsdaten gehoeren dann NICHT hierher, sondern in eine Datei, die
+# ueber ein Secret eingehaengt wird.
+#
+#   - name: team-slack
+#     slack_configs:
+#       - api_url_file: /run/secrets/slack_webhook
+#         channel: '#it-integration'
+#         title: '{{ .CommonAnnotations.summary }}'
+#         text: '{{ .CommonAnnotations.description }}'
+#
+#   - name: team-mail
+#     email_configs:
+#       - to: it-integration@beispiel-klinikum.de
+#         from: monitoring@beispiel-klinikum.de
+#         smarthost: mail.beispiel-klinikum.de:587
+#         auth_username: monitoring
+#         auth_password_file: /run/secrets/smtp_password
+# ---------------------------------------------------------------------------

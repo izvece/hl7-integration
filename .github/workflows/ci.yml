@@ -1,0 +1,332 @@
+name: CI/CD
+
+# Bei jedem Push und jedem Pull Request. Zusaetzlich von Hand startbar,
+# damit man ein Ausrollen nachziehen kann, ohne einen Leer-Commit zu machen.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Laeuft ein neuer Push auf denselben Branch, wird der alte Lauf abgebrochen -
+# sonst rollen zwei Pipelines gleichzeitig denselben Kanal aus.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Testwerte. Die echten Zugangsdaten kommen beim Ausrollen aus den Secrets.
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: ci_postgres
+  POSTGRES_DB: hl7
+  MIRTH_DB_PASSWORD: ci_mirth
+  HL7_APP_PASSWORD: ci_app
+  HL7_MONITOR_PASSWORD: ci_monitor
+  MIRTH_ADMIN_USER: admin
+  MIRTH_ADMIN_PASSWORD: ci_admin
+  MIRTH_KEYSTORE_STOREPASS: ci_keystore
+  MIRTH_KEYSTORE_KEYPASS: ci_keystore
+  GRAFANA_ADMIN_PASSWORD: ci_grafana
+  MLLP_PORT: 6661
+  MIRTH_HTTPS_PORT: 8443
+  PROMETHEUS_PORT: 9090
+  ALERTMANAGER_PORT: 9093
+  GRAFANA_PORT: 3000
+
+jobs:
+
+  # =========================================================================
+  # 1. Statische Pruefungen. Laufen in Sekunden und fangen die Haelfte aller
+  #    Fehler, bevor ein Container startet.
+  # =========================================================================
+  pruefen:
+    name: Konfiguration pruefen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Werkzeuge installieren
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxml2-utils shellcheck
+
+      - name: Shell-Skripte pruefen
+        run: shellcheck deploy/*.sh tests/*.sh db/init/*.sh
+
+      - name: Kanal-XML bauen und auf Wohlgeformtheit pruefen
+        run: ./deploy/build.sh
+
+      # Die Gegenprobe: kommt das eingebettete JavaScript unveraendert wieder
+      # heraus? Ein Fehler beim XML-Escaping faellt sonst erst auf, wenn der
+      # Kanal zur Laufzeit an einer Stelle abbricht, die niemand vermutet.
+      - name: JavaScript-Einbettung gegenpruefen
+        run: |
+          for js in mirth/channels/adt-inbound/src/*.js; do
+            name=$(basename "$js")
+            case "$name" in
+              transformer.js)   pfad='/channel/sourceConnector/transformer/elements/*[1]/script' ;;
+              postprocessor.js) pfad='/channel/postprocessingScript' ;;
+              dest_log.js)      pfad='/channel/destinationConnectors/connector[1]/properties/query' ;;
+              dest_complete.js) pfad='/channel/destinationConnectors/connector[2]/properties/query' ;;
+              dest_reject.js)   pfad='/channel/destinationConnectors/connector[3]/properties/query' ;;
+              *) continue ;;
+            esac
+            xmllint --xpath "string($pfad)" build/adt-inbound.xml > /tmp/rueck.js
+            if ! diff -q "$js" /tmp/rueck.js > /dev/null; then
+              echo "FEHLER: $name kommt aus der XML nicht unveraendert zurueck"
+              diff "$js" /tmp/rueck.js | head -20
+              exit 1
+            fi
+            echo "ok: $name"
+          done
+
+      - name: Prometheus-Regeln und -Konfiguration pruefen
+        run: |
+          docker run --rm -v "$PWD/monitoring/prometheus:/p:ro" \
+            --entrypoint promtool prom/prometheus:v2.53.0 check rules /p/rules/hl7.yml
+          docker run --rm -v "$PWD/monitoring/prometheus:/p:ro" \
+            --entrypoint promtool prom/prometheus:v2.53.0 check config /p/prometheus.yml
+
+      - name: Alertmanager-Konfiguration pruefen
+        run: |
+          docker run --rm -v "$PWD/monitoring/alertmanager:/a:ro" \
+            --entrypoint amtool prom/alertmanager:v0.27.0 check-config /a/alertmanager.yml
+
+      - name: Grafana-Dashboard pruefen
+        run: jq -e '.panels | length > 0' monitoring/grafana/dashboards/hl7-pipeline.json
+
+      - name: Compose-Datei pruefen
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+      # Damit ein Ausrollen genau die XML nimmt, die hier geprueft wurde, und
+      # nicht eine neu gebaute.
+      - name: Gebaute Kanal-XML als Artefakt ablegen
+        uses: actions/upload-artifact@v4
+        with:
+          name: kanal-xml
+          path: build/adt-inbound.xml
+          retention-days: 30
+
+  # =========================================================================
+  # 2. Die Verarbeitungslogik gegen ein echtes PostgreSQL.
+  #    Braucht keinen Mirth - deshalb schnell und der erste Ort, an dem ein
+  #    Logikfehler auffaellt.
+  # =========================================================================
+  sql-tests:
+    name: SQL-Logik testen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PostgreSQL starten
+        run: |
+          cp .env.example .env
+          docker compose up -d postgres
+
+      - name: Auf Bereitschaft warten
+        run: |
+          for _ in $(seq 1 30); do
+            if docker compose exec -T postgres \
+                 pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" > /dev/null 2>&1; then
+              echo "PostgreSQL ist bereit."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "PostgreSQL wurde nicht bereit."
+          docker compose logs postgres
+          exit 1
+
+      # Wenn ein Init-Skript scheitert, startet Postgres trotzdem - nur ohne
+      # Schema. Das hier macht den Unterschied sichtbar.
+      - name: Schema auf Vollstaendigkeit pruefen
+        run: |
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+              SELECT CASE WHEN count(*) = 3 THEN 'ok'
+                          ELSE 'FEHLER: nur ' || count(*) || ' von 3 Tabellen' END
+                FROM information_schema.tables
+               WHERE table_schema = 'hl7'
+                 AND table_name IN ('message_log', 'patient_event', 'message_error');"
+
+      - name: Funktionen testen
+        run: |
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_USER" -d "$POSTGRES_DB" < tests/test_functions.sql
+
+      - name: Logs bei Fehlschlag
+        if: failure()
+        run: docker compose logs postgres
+
+  # =========================================================================
+  # 3. Die ganze Strecke: Nachricht rein, Datenbank raus.
+  #    Hier faellt auf, was die SQL-Tests nicht sehen koennen - ein Fehler im
+  #    Kanal, ein falscher Feldzugriff, eine kaputte Quittung.
+  # =========================================================================
+  integration:
+    name: Ende-zu-Ende testen
+    runs-on: ubuntu-latest
+    needs: [pruefen, sql-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gepruefte Kanal-XML holen
+        uses: actions/download-artifact@v4
+        with:
+          name: kanal-xml
+          path: build
+
+      - name: Stapel starten
+        run: |
+          cp .env.example .env
+          mkdir -p data/error-store
+          docker compose up -d --build
+
+      - name: Auf Mirth warten
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sk --max-time 3 \
+                 "https://localhost:${MIRTH_HTTPS_PORT}/api/server/version" > /dev/null 2>&1; then
+              echo "Mirth ist bereit."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Mirth wurde nicht bereit."
+          docker compose logs mirth
+          exit 1
+
+      - name: Kanal ausrollen
+        run: MIRTH_URL=https://localhost:${MIRTH_HTTPS_PORT} ./deploy/deploy.sh
+
+      - name: Ende-zu-Ende-Test
+        run: ./tests/test_e2e.sh
+
+      # Ein Monitoring, das die Metriken nicht findet, meldet nie einen Alarm.
+      # Deshalb wird die Verbindung Prometheus -> Exporter mitgetestet.
+      - name: Prometheus findet die Metriken
+        run: |
+          for _ in $(seq 1 20); do
+            anzahl=$(curl -s "http://localhost:${PROMETHEUS_PORT}/api/v1/query?query=hl7_pipeline_backlog" \
+                     | jq '.data.result | length')
+            if [ "$anzahl" -gt 0 ]; then
+              echo "Prometheus kennt hl7_pipeline_backlog."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Prometheus hat die hl7-Metriken nicht gefunden."
+          curl -s "http://localhost:${PROMETHEUS_PORT}/api/v1/targets" | jq '.data.activeTargets[] | {job: .labels.job, health, lastError}'
+          exit 1
+
+      - name: Alarmregeln sind geladen
+        run: |
+          geladen=$(curl -s "http://localhost:${PROMETHEUS_PORT}/api/v1/rules" \
+                    | jq '[.data.groups[].rules[].name] | length')
+          echo "$geladen Regeln geladen."
+          [ "$geladen" -ge 9 ] || { echo "Es fehlen Regeln."; exit 1; }
+
+      # Der Alarm selbst wird geprueft, nicht nur seine Existenz: eine
+      # haengende Nachricht muss Prometheus tatsaechlich in den Zustand
+      # "pending" bringen.
+      - name: Der Alarm fuer haengende Nachrichten feuert wirklich
+        run: |
+          docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+            "INSERT INTO hl7.message_log (control_id, sending_facility, raw_message, status, received_at)
+             VALUES ('CI-HAENGT', 'CI', 'MSH|...', 'received', now() - interval '1 hour');"
+
+          for _ in $(seq 1 24); do
+            zustand=$(curl -s "http://localhost:${PROMETHEUS_PORT}/api/v1/rules" \
+                      | jq -r '[.data.groups[].rules[]
+                                | select(.name == "HL7NachrichtenBleibenHaengen")
+                                | .state] | .[0] // "unbekannt"')
+            echo "Zustand: $zustand"
+            if [ "$zustand" = "pending" ] || [ "$zustand" = "firing" ]; then
+              echo "Der Alarm reagiert auf die haengende Nachricht."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Der Alarm hat nicht angesprochen - das Monitoring wuerde den Fall nicht melden."
+          curl -s "http://localhost:${PROMETHEUS_PORT}/api/v1/query?query=hl7_pipeline_oldest_unprocessed_seconds" | jq .
+          exit 1
+
+      - name: Logs bei Fehlschlag
+        if: failure()
+        run: |
+          echo "===== mirth ====="; docker compose logs --tail=200 mirth
+          echo "===== postgres ====="; docker compose logs --tail=50 postgres
+          echo "===== postgres-exporter ====="; docker compose logs --tail=50 postgres-exporter
+          echo "===== prometheus ====="; docker compose logs --tail=50 prometheus
+
+      - name: Fehlerablage als Artefakt ablegen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fehlerablage
+          path: data/error-store/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Aufraeumen
+        if: always()
+        run: docker compose down -v
+
+  # =========================================================================
+  # 4. Ausrollen. Nur von main und nur, wenn alles davor gruen ist.
+  #
+  # Die Zugangsdaten des Zielsystems kommen aus einer GitHub-Environment
+  # namens "integration". Dort laesst sich zusaetzlich eine Freigabe durch
+  # einen Menschen verlangen - in einem Haus mit Patientendaten ueblich und
+  # sinnvoll.
+  # =========================================================================
+  ausrollen:
+    name: Auf den Integrationsserver ausrollen
+    runs-on: ubuntu-latest
+    needs: [integration]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gepruefte Kanal-XML holen
+        uses: actions/download-artifact@v4
+        with:
+          name: kanal-xml
+          path: build
+
+      - name: Pruefen, ob ein Ziel hinterlegt ist
+        id: ziel
+        run: |
+          if [ -z "${{ secrets.MIRTH_URL }}" ]; then
+            echo "vorhanden=nein" >> "$GITHUB_OUTPUT"
+            echo "::notice::Kein Zielserver hinterlegt. Zum Ausrollen in den"
+            echo "::notice::Repository-Einstellungen die Environment 'integration' anlegen"
+            echo "::notice::mit MIRTH_URL, MIRTH_ADMIN_USER, MIRTH_ADMIN_PASSWORD, HL7_APP_PASSWORD."
+          else
+            echo "vorhanden=ja" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Kanal ausrollen
+        if: steps.ziel.outputs.vorhanden == 'ja'
+        env:
+          MIRTH_URL: ${{ secrets.MIRTH_URL }}
+          MIRTH_ADMIN_USER: ${{ secrets.MIRTH_ADMIN_USER }}
+          MIRTH_ADMIN_PASSWORD: ${{ secrets.MIRTH_ADMIN_PASSWORD }}
+          HL7_APP_PASSWORD: ${{ secrets.HL7_APP_PASSWORD }}
+          DB_URL: ${{ secrets.DB_URL }}
+          DB_USER: ${{ secrets.DB_USER }}
+        run: ./deploy/deploy.sh
+
+      - name: Zusammenfassung
+        run: |
+          {
+            echo "## Ausrollen"
+            echo
+            if [ "${{ steps.ziel.outputs.vorhanden }}" = "ja" ]; then
+              echo "Kanal \`ADT Inbound\` auf das Zielsystem ausgerollt."
+            else
+              echo "Uebersprungen: kein Zielsystem hinterlegt."
+              echo "Die geprueften Dateien liegen als Artefakt \`kanal-xml\` bereit."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

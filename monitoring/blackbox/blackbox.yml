@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# Der blackbox_exporter prueft von aussen, ob ein Port ueberhaupt annimmt.
+#
+# Warum zusaetzlich zu den Datenbank-Metriken: wenn der MLLP-Listener nicht
+# laeuft, kommen gar keine Nachrichten an. In der Datenbank sieht das aus wie
+# "ruhig" - und ruhig ist nicht von "kaputt" zu unterscheiden, solange niemand
+# den Port selbst prueft.
+# ---------------------------------------------------------------------------
+
+modules:
+
+  # Reiner TCP-Verbindungsaufbau. Fuer MLLP genau richtig: wir wollen wissen,
+  # ob der Listener annimmt, und keine Testnachricht in die Verarbeitung
+  # schieben.
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+
+  # Die Mirth-Weboberflaeche und REST-API. 401 gilt als Erfolg: der Server
+  # antwortet und verlangt eine Anmeldung - genau das soll er.
+  mirth_api:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      # Ohne diesen Header antwortet Mirth mit 400 - sein CSRF-Schutz weist
+      # jede Anfrage ohne X-Requested-With ab. Ein 400 ist als Signal
+      # wertlos, weil es nicht zwischen "Server kaputt" und "Anfrage falsch
+      # gestellt" unterscheidet. Mit dem Header kommt ein 401: der Server
+      # lebt und verlangt eine Anmeldung - genau das soll er.
+      headers:
+        X-Requested-With: blackbox-exporter
+      valid_status_codes: [200, 401]
+      fail_if_not_ssl: true
+      tls_config:
+        # Mirth bringt ein selbst signiertes Zertifikat mit. Im Betrieb hier
+        # das eigene CA-Zertifikat hinterlegen statt die Pruefung abzuschalten.
+        insecure_skip_verify: true

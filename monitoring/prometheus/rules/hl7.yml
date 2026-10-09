@@ -1,0 +1,156 @@
+# ---------------------------------------------------------------------------
+# Alarmregeln der HL7-Strecke.
+#
+# Die Schwellwerte stehen bewusst HIER und nicht in der .env: Prometheus liest
+# in Regeldateien keine Umgebungsvariablen. Ein Wert in der .env waere ein Wert,
+# der nirgends wirkt.
+#
+# Die Werte sind fuer eine lokale Lernumgebung gewaehlt - niedrig genug, dass
+# man einen Alarm in wenigen Minuten ausloesen und ansehen kann. Im Betrieb
+# ergeben sie sich daraus, wie schnell das Haus auf eine ADT-Nachricht
+# reagieren muss.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: hl7-verarbeitung
+    rules:
+
+      # Der Kernalarm: eine Nachricht ist angenommen, aber seit Minuten nicht
+      # verarbeitet. Genau dafuer gibt es die Zweiteilung in log_message und
+      # complete_message - ohne sie gaebe es diesen Zustand gar nicht.
+      - alert: HL7NachrichtenBleibenHaengen
+        expr: hl7_pipeline_oldest_unprocessed_seconds > 300
+        for: 2m
+        labels:
+          severity: critical
+          bereich: integration
+        annotations:
+          summary: "HL7-Nachrichten bleiben in der Verarbeitung haengen"
+          description: >-
+            Die aelteste unverarbeitete Nachricht ist
+            {{ $value | humanizeDuration }} alt. Es warten derzeit Nachrichten
+            im Status "received", die nicht in patient_event ankommen.
+          pruefen: |-
+            1. docker compose logs mirth --tail=100
+            2. In Mirth: Kanal "ADT Inbound", Ziel "Patientendaten schreiben" -
+               liegt dort etwas in der Warteschlange?
+            3. SELECT * FROM hl7.message_log WHERE status = 'received'
+               ORDER BY received_at LIMIT 10;
+
+      # Nicht alt, aber viel: deutet auf einen Durchsatz-Engpass hin, nicht
+      # auf einen Stillstand. Anderer Alarm, andere Ursache, andere Reaktion.
+      - alert: HL7RueckstauWaechst
+        expr: hl7_pipeline_backlog > 50
+        for: 5m
+        labels:
+          severity: warning
+          bereich: integration
+        annotations:
+          summary: "Rueckstau in der HL7-Verarbeitung"
+          description: >-
+            {{ $value }} Nachrichten warten auf Verarbeitung. Die Strecke
+            kommt dem Eingang nicht hinterher.
+
+      # Stille ist kein Erfolg. Ohne diesen Alarm ist ein ausgefallener Sender
+      # nicht von einem ruhigen Wochenende zu unterscheiden.
+      # -1 bedeutet: noch nie eine Nachricht empfangen (frisches System) -
+      # das soll nicht alarmieren.
+      - alert: HL7KeineNachrichtenMehr
+        expr: hl7_pipeline_last_message_age_seconds > 1800
+        for: 5m
+        labels:
+          severity: warning
+          bereich: integration
+        annotations:
+          summary: "Seit ueber 30 Minuten keine HL7-Nachricht eingegangen"
+          description: >-
+            Die letzte Nachricht kam vor {{ $value | humanizeDuration }}.
+            Moeglicherweise sendet das Quellsystem nicht mehr.
+
+  - name: hl7-fehlerablage
+    rules:
+
+      # Einzelne fehlerhafte Nachrichten sind normal. Ein Haufen davon in
+      # kurzer Zeit heisst: beim Sender hat sich etwas geaendert.
+      - alert: HL7FehlerHaeufenSich
+        expr: sum(increase(hl7_messages_total{status="error"}[15m])) > 5
+        for: 0m
+        labels:
+          severity: warning
+          bereich: integration
+        annotations:
+          summary: "Ungewoehnlich viele abgelehnte HL7-Nachrichten"
+          description: >-
+            {{ $value | printf "%.0f" }} Nachrichten wurden in den letzten
+            15 Minuten abgelehnt. Haeufig hat ein Quellsystem sein Format
+            geaendert.
+          pruefen: "SELECT reason, count(*) FROM hl7.message_error WHERE resolved_at IS NULL GROUP BY reason;"
+
+      # Die Fehlerablage ist zum Abarbeiten da, nicht zum Volllaufen.
+      - alert: HL7FehlerablageNichtAbgearbeitet
+        expr: max(hl7_errors_oldest_seconds) > 86400
+        for: 10m
+        labels:
+          severity: warning
+          bereich: integration
+        annotations:
+          summary: "Alte unbearbeitete Eintraege in der Fehlerablage"
+          description: >-
+            Der aelteste offene Fehler liegt seit
+            {{ $value | humanizeDuration }} unbearbeitet.
+
+  - name: hl7-erreichbarkeit
+    rules:
+
+      # Wenn der Listener nicht annimmt, kommt gar nichts an - und in der
+      # Datenbank sieht das aus wie Ruhe.
+      - alert: HL7MllpListenerNichtErreichbar
+        expr: probe_success{job="mllp-listener"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          bereich: integration
+        annotations:
+          summary: "MLLP-Listener nimmt keine Verbindungen an"
+          description: >-
+            Der Port {{ $labels.instance }} antwortet nicht. Das Quellsystem
+            kann derzeit keine ADT-Nachrichten abliefern.
+
+      - alert: HL7MirthApiNichtErreichbar
+        expr: probe_success{job="mirth-api"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          bereich: integration
+        annotations:
+          summary: "Mirth-Verwaltungsschnittstelle antwortet nicht"
+
+      - alert: HL7DatenbankNichtErreichbar
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          bereich: integration
+        annotations:
+          summary: "PostgreSQL ist nicht erreichbar"
+          description: >-
+            Ohne Datenbank nimmt der Kanal keine Nachricht mehr an und
+            quittiert dem Sender mit AE.
+
+  - name: hl7-monitoring-selbst
+    rules:
+
+      # Ein Monitoring, das still ausfaellt, ist schlimmer als keines: man
+      # glaubt dann, alles sei in Ordnung. Deshalb ueberwacht es sich selbst.
+      - alert: HL7MonitoringBlind
+        expr: up{job="postgres-exporter"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          bereich: integration
+        annotations:
+          summary: "Der Metrik-Exporter liefert nichts mehr"
+          description: >-
+            Solange dieser Alarm steht, sind ALLE anderen Aussagen ueber die
+            Verarbeitung wertlos - es kommen schlicht keine Zahlen an.

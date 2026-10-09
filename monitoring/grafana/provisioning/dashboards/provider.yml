@@ -1,0 +1,15 @@
+apiVersion: 1
+providers:
+  - name: HL7
+    orgId: 1
+    folder: HL7-Integration
+    type: file
+    disableDeletion: false
+    # Das Dashboard kommt aus dem Repository. Aenderungen in der Oberflaeche
+    # werden beim naechsten Start ueberschrieben - das ist Absicht: so ist die
+    # Datei die Wahrheit und nicht der Zustand eines Containers.
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
