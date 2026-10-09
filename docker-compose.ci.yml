@@ -1,0 +1,32 @@
+# ---------------------------------------------------------------------------
+# Überlagerung für die Pipeline.
+#
+# Mirth und Grafana gibt es ausschliesslich auf Docker Hub, und Docker Hub
+# begrenzt unauthentifizierte Pulls pro IP-Adresse. GitHub-Runner teilen sich
+# diese Adressen, weshalb der Lauf mit "toomanyrequests" scheitert - ohne dass
+# am Code etwas falsch ist.
+#
+# Deshalb liegen beide Images zusaetzlich als Spiegelung in der GitHub
+# Container Registry dieses Kontos. Die Pipeline holt sie dort, lokal bleibt
+# docker-compose.yml bei den Original-Images.
+#
+# Verwendung:
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --wait
+#
+# Spiegelung erneuern (nach einem Versionswechsel, von einem Rechner mit
+# angemeldeter Registry):
+#   docker pull nextgenhealthcare/connect:4.5.2
+#   docker tag  nextgenhealthcare/connect:4.5.2 ghcr.io/izvece/connect:4.5.2
+#   docker push ghcr.io/izvece/connect:4.5.2
+#   (dasselbe fuer grafana/grafana:11.1.0 -> ghcr.io/izvece/grafana:11.1.0)
+#
+# Dabei auch die Versionen hier UND in docker-compose.yml angleichen, sonst
+# testet die Pipeline eine andere Version als die, die lokal laeuft.
+# ---------------------------------------------------------------------------
+
+services:
+  mirth:
+    image: ghcr.io/izvece/connect:4.5.2
+
+  grafana:
+    image: ghcr.io/izvece/grafana:11.1.0

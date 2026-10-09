@@ -264,6 +264,46 @@ fehlt Docker im PATH. Abhilfe in `~/.zshrc`:
 export PATH="$HOME/.docker/bin:$PATH"
 ```
 
+## Die Pipeline und das Docker-Hub-Limit
+
+Stufe 1 und 2 der Pipeline laufen grün. Stufe 3 (Ende-zu-Ende) scheitert
+derzeit beim Starten des Stapels mit `toomanyrequests`: GitHub-Runner teilen
+sich IP-Adressen, und Docker Hub begrenzt unauthentifizierte Pulls pro IP.
+Am Code ist dabei nichts falsch.
+
+Alle Images, die es auch anderswo gibt, kommen deshalb von `public.ecr.aws`
+bzw. `quay.io`. Nur **Mirth und Grafana liegen ausschließlich auf Docker
+Hub**. Für die beiden liegt `docker-compose.ci.yml` bereit, das sie auf eine
+Spiegelung in der GitHub Container Registry umbiegt.
+
+Zum Anlegen der Spiegelung:
+
+```bash
+gh auth refresh -s write:packages
+echo "$(gh auth token)" | docker login ghcr.io -u izvece --password-stdin
+docker buildx imagetools create -t ghcr.io/izvece/connect:4.5.2 \
+    nextgenhealthcare/connect:4.5.2
+docker buildx imagetools create -t ghcr.io/izvece/grafana:11.1.0 \
+    grafana/grafana:11.1.0
+```
+
+`buildx imagetools` statt `docker tag` und `push`: es kopiert die
+vollständige Multi-Arch-Manifestliste direkt von Registry zu Registry. Wer
+stattdessen ein lokal auf Apple Silicon liegendes Image spiegelt, erzeugt ein
+arm64-Image, das die amd64-Runner nicht starten können.
+
+Danach die Pakete auf GitHub für das Repository lesbar machen und den
+Ende-zu-Ende-Job auf das Overlay umstellen:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build --wait
+```
+
+Die Alternative wäre ein Docker-Hub-Token als Repository-Secrets
+`DOCKERHUB_USERNAME` und `DOCKERHUB_TOKEN` — die Pipeline nutzt sie
+automatisch, wenn sie vorhanden sind, und weist sonst in der Zusammenfassung
+darauf hin.
+
 ## Nach einer Schema-Änderung
 
 Die Skripte in `db/init/` laufen **nur bei einer leeren Datenbank**. Nach einer
