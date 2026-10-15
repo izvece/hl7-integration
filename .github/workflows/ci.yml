@@ -14,7 +14,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Lesen der gespiegelten Images aus der GitHub Container Registry.
+permissions:
+  contents: read
+  packages: read
+
 env:
+  # Alle docker-compose-Aufrufe lesen die Ueberlagerung mit, damit die Images
+  # aus der GitHub Container Registry kommen statt von Docker Hub oder
+  # public.ecr.aws - siehe docker-compose.ci.yml.
+  COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
   # Testwerte. Die echten Zugangsdaten kommen beim Ausrollen aus den Secrets.
   POSTGRES_USER: postgres
   POSTGRES_PASSWORD: ci_postgres
@@ -118,6 +127,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Bei der GitHub Container Registry anmelden
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: PostgreSQL starten und auf abgeschlossene Initialisierung warten
         run: |
           cp .env.example .env
@@ -167,12 +183,6 @@ jobs:
     name: Ende-zu-Ende testen
     runs-on: ubuntu-latest
     needs: [pruefen, sql-tests]
-    # Mirth und Grafana liegen nur auf Docker Hub. Sind Zugangsdaten
-    # hinterlegt, werden sie angemeldet geholt - sonst greift das Limit fuer
-    # unauthentifizierte Pulls, das sich GitHub-Runner ueber geteilte
-    # IP-Adressen gegenseitig wegnehmen.
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@v4
 
@@ -182,21 +192,12 @@ jobs:
           name: kanal-xml
           path: build
 
-      - name: Bei Docker Hub anmelden, falls Zugangsdaten hinterlegt sind
-        if: env.DOCKERHUB_USERNAME != ''
+      - name: Bei der GitHub Container Registry anmelden
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Hinweis, wenn keine Docker-Hub-Zugangsdaten hinterlegt sind
-        if: env.DOCKERHUB_USERNAME == ''
-        run: |
-          echo "::notice::Keine Docker-Hub-Zugangsdaten hinterlegt. Mirth und"
-          echo "::notice::Grafana werden unauthentifiziert geholt. Scheitert"
-          echo "::notice::dieser Lauf mit \"toomanyrequests\", dann in den"
-          echo "::notice::Repository-Secrets DOCKERHUB_USERNAME und"
-          echo "::notice::DOCKERHUB_TOKEN setzen (Token mit Leserecht genuegt)."
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Stapel starten
         run: |

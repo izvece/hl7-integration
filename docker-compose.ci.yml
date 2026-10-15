@@ -1,32 +1,44 @@
 # ---------------------------------------------------------------------------
 # Überlagerung für die Pipeline.
 #
-# Mirth und Grafana gibt es ausschliesslich auf Docker Hub, und Docker Hub
-# begrenzt unauthentifizierte Pulls pro IP-Adresse. GitHub-Runner teilen sich
-# diese Adressen, weshalb der Lauf mit "toomanyrequests" scheitert - ohne dass
-# am Code etwas falsch ist.
+# Die Pipeline holt ihre Images nicht von Docker Hub oder public.ecr.aws:
+# beide begrenzen unauthentifizierte Pulls pro IP-Adresse, und GitHub-Runner
+# teilen sich diese Adressen. Der Lauf scheitert dann mit "toomanyrequests" -
+# ohne dass am Code etwas falsch ist.
 #
-# Deshalb liegen beide Images zusaetzlich als Spiegelung in der GitHub
-# Container Registry dieses Kontos. Die Pipeline holt sie dort, lokal bleibt
-# docker-compose.yml bei den Original-Images.
+# Deshalb liegen Postgres, Mirth, Grafana und das Python-Basisimage als Spiegelung in der GitHub
+# Container Registry dieses Kontos. Die Pipeline setzt COMPOSE_FILE so, dass
+# diese Datei immer mitgelesen wird; lokal bleibt docker-compose.yml bei den
+# Original-Images.
 #
-# Verwendung:
+# Verwendung von Hand:
 #   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --wait
 #
-# Spiegelung erneuern (nach einem Versionswechsel, von einem Rechner mit
-# angemeldeter Registry):
-#   docker pull nextgenhealthcare/connect:4.5.2
-#   docker tag  nextgenhealthcare/connect:4.5.2 ghcr.io/izvece/connect:4.5.2
-#   docker push ghcr.io/izvece/connect:4.5.2
-#   (dasselbe fuer grafana/grafana:11.1.0 -> ghcr.io/izvece/grafana:11.1.0)
+# Spiegelung erneuern (nach einem Versionswechsel, mit write:packages):
+#   docker buildx imagetools create -t ghcr.io/izvece/postgres:16-alpine postgres:16-alpine
+#   docker buildx imagetools create -t ghcr.io/izvece/connect:4.5.2 nextgenhealthcare/connect:4.5.2
+#   docker buildx imagetools create -t ghcr.io/izvece/grafana:11.1.0 grafana/grafana:11.1.0
+#   docker buildx imagetools create -t ghcr.io/izvece/python:3.12-alpine python:3.12-alpine
+#
+# imagetools, nicht docker tag und push: das kopiert die vollstaendige
+# Multi-Arch-Liste von Registry zu Registry. Ein lokal gezogenes Image auf
+# Apple Silicon ist nur arm64, die Runner brauchen amd64.
 #
 # Dabei auch die Versionen hier UND in docker-compose.yml angleichen, sonst
 # testet die Pipeline eine andere Version als die, die lokal laeuft.
 # ---------------------------------------------------------------------------
 
 services:
+  postgres:
+    image: ghcr.io/izvece/postgres:16-alpine
+
   mirth:
     image: ghcr.io/izvece/connect:4.5.2
 
   grafana:
     image: ghcr.io/izvece/grafana:11.1.0
+
+  alert-sink:
+    build:
+      args:
+        BASE_IMAGE: ghcr.io/izvece/python:3.12-alpine
