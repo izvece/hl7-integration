@@ -36,13 +36,15 @@ init:  ## .env aus der Vorlage anlegen und Verzeichnisse erstellen
 	  cp .env.example .env; \
 	  echo ".env angelegt. JETZT die Passwoerter darin aendern."; \
 	fi
-	@mkdir -p data/error-store
+	@mkdir -p data/error-store && chmod 0777 data/error-store
 	@echo "Verzeichnis data/error-store bereit."
 
 # --- Stapel steuern ---------------------------------------------------------
 .PHONY: up
 up:  ## Alle Container starten und auf Bereitschaft warten
-	@mkdir -p data/error-store
+	@# Mirth schreibt im Container als Nutzer 1000. Auf einem Linux-Host gehoert
+	@# der Ordner sonst dem eigenen Nutzer, und die Fehlerablage bleibt still leer.
+	@mkdir -p data/error-store && chmod 0777 data/error-store
 	@echo "Starte Container und warte auf ihre Healthchecks..."
 	$(COMPOSE) up -d --build --wait
 	@echo "Warte auf Mirth (das dauert beim ersten Start eine Minute)..."

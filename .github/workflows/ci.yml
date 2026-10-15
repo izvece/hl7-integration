@@ -24,6 +24,8 @@ env:
   # aus der GitHub Container Registry kommen statt von Docker Hub oder
   # public.ecr.aws - siehe docker-compose.ci.yml.
   COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
+  # Der MLLP-Client in tests/test_e2e.sh, aus derselben Spiegelung.
+  PYTHON_IMAGE: ghcr.io/izvece/python:3.12-alpine
   # Testwerte. Die echten Zugangsdaten kommen beim Ausrollen aus den Secrets.
   POSTGRES_USER: postgres
   POSTGRES_PASSWORD: ci_postgres
@@ -210,7 +212,10 @@ jobs:
       - name: Stapel starten
         run: |
           cp .env.example .env
-          mkdir -p data/error-store
+          # Mirth schreibt im Container als Nutzer 1000, der Runner ist 1001.
+          # Ohne chmod darf Mirth nicht in den Ordner schreiben, und die
+          # Fehlerablage als Datei bleibt leer - ohne Fehler im Log.
+          mkdir -p data/error-store && chmod 0777 data/error-store
           docker compose up -d --build --wait
 
       - name: Auf Mirth warten

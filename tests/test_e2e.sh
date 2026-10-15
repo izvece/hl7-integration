@@ -12,6 +12,9 @@ cd "$(dirname "$0")/.."
 MLLP_HOST="${MLLP_HOST:-localhost}"
 MLLP_PORT="${MLLP_PORT:-6661}"
 COMPOSE="${COMPOSE:-docker compose}"
+# Die Pipeline setzt hier die Spiegelung in der GitHub Container Registry,
+# weil public.ecr.aws auf den Runnern ebenfalls mit toomanyrequests abbricht.
+PYTHON_IMAGE="${PYTHON_IMAGE:-public.ecr.aws/docker/library/python:3.12-alpine}"
 
 fehlgeschlagen=0
 
@@ -48,7 +51,7 @@ echo "==> Nachrichten senden"
 # ist. --network host, damit localhost:6661 erreichbar bleibt.
 docker run --rm --network host \
     -v "$PWD/tests:/tests:ro" -w /tests \
-    public.ecr.aws/docker/library/python:3.12-alpine python send_hl7.py \
+    "$PYTHON_IMAGE" python send_hl7.py \
         --host "$MLLP_HOST" --port "$MLLP_PORT" \
         samples/01_gueltig_a01_aufnahme.hl7 \
         samples/02_gueltig_a08_aktualisierung.hl7 \
@@ -142,7 +145,7 @@ echo "==> Dublettenerkennung"
 # ---------------------------------------------------------------------------
 docker run --rm --network host \
     -v "$PWD/tests:/tests:ro" -w /tests \
-    public.ecr.aws/docker/library/python:3.12-alpine python send_hl7.py \
+    "$PYTHON_IMAGE" python send_hl7.py \
         --host "$MLLP_HOST" --port "$MLLP_PORT" \
         samples/01_gueltig_a01_aufnahme.hl7 > /dev/null
 sleep 5
