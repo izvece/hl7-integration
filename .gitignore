@@ -1,0 +1,15 @@
+# Zugangsdaten
+.env
+*.pem
+*.key
+
+# Build-Ergebnisse: die fertige Kanal-XML wird aus channel.xml + src/*.js
+# erzeugt und gehoert deshalb nicht ins Repository.
+build/
+
+# Laufzeitdaten der Container
+data/
+pgdata/
+
+# Betriebssystem
+.DS_Store
