@@ -32,7 +32,10 @@ env:
   HL7_APP_PASSWORD: ci_app
   HL7_MONITOR_PASSWORD: ci_monitor
   MIRTH_ADMIN_USER: admin
-  MIRTH_ADMIN_PASSWORD: ci_admin
+  # Ein frisch gestartetes Mirth kennt nur admin/admin und verlangt die
+  # Aenderung erst in der Weboberflaeche - ein anderer Wert hier fuehrt beim
+  # Ausrollen zu HTTP 401.
+  MIRTH_ADMIN_PASSWORD: admin
   MIRTH_KEYSTORE_STOREPASS: ci_keystore
   MIRTH_KEYSTORE_KEYPASS: ci_keystore
   GRAFANA_ADMIN_PASSWORD: ci_grafana
