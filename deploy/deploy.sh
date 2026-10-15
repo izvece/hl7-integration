@@ -38,6 +38,15 @@ CURL=(curl --silent --show-error --insecure
 schritt() { printf '\n==> %s\n' "$1"; }
 fehler()  { printf 'FEHLER: %s\n' "$1" >&2; exit 1; }
 
+# Die Antworten von Mirth werden unten mit "|| true" ausgewertet, damit eine
+# Fehlermeldung von Mirth nicht das Skript abbricht. Fehlt dabei das Werkzeug
+# selbst, kommt still ein leerer Text heraus - und das Skript meldet einen
+# Kanal als "nicht abrufbar", der in Wahrheit da ist. Deshalb vorher pruefen.
+for werkzeug in curl xmllint jq; do
+    command -v "$werkzeug" > /dev/null ||
+        fehler "$werkzeug fehlt (unter Debian/Ubuntu: xmllint steckt in libxml2-utils)."
+done
+
 # Mirth antwortet auf einen Fehler mit einer XML-Exception samt vollstaendigem
 # Java-Stacktrace - achtzig Zeilen Jetty-Innenleben, in denen die eigentliche
 # Meldung untergeht. Hier bleibt nur die Meldung uebrig.

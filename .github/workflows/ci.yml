@@ -195,6 +195,11 @@ jobs:
           name: kanal-xml
           path: build
 
+      # deploy.sh wertet die Antworten von Mirth mit xmllint aus; das ist
+      # auf den Runnern nicht vorinstalliert.
+      - name: Werkzeuge fuer das Ausrollen installieren
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxml2-utils
+
       - name: Bei der GitHub Container Registry anmelden
         uses: docker/login-action@v3
         with:
@@ -320,6 +325,11 @@ jobs:
         with:
           name: kanal-xml
           path: build
+
+      # deploy.sh wertet die Antworten von Mirth mit xmllint aus; das ist
+      # auf den Runnern nicht vorinstalliert.
+      - name: Werkzeuge fuer das Ausrollen installieren
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxml2-utils
 
       - name: Pruefen, ob ein Ziel hinterlegt ist
         id: ziel
